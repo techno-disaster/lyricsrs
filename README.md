@@ -1,5 +1,7 @@
 ### Lyrics getter
 
+Huge thanks to https://github.com/tranxuanthang/lrclib ofc.
+
 Uses lrclib.net to get lyrics for my Jellyfin library.
 
 Is very much dependant on having the Jellyfin suggested music library structure. (Artist/Album/Song).
