@@ -1,14 +1,18 @@
 use std::env;
+
+use lofty::file::AudioFile;
+use lofty::probe::Probe;
 use std::fmt;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::task;
 use tokio::time::Instant;
-use urlencoding::encode;
 use walkdir::WalkDir;
 
 use serde::Deserialize;
@@ -116,22 +120,35 @@ async fn parse_song_path(
                     let album = album_dir.file_name()?.to_string_lossy().into_owned();
                     let song = file_path.file_stem()?.to_string_lossy().into_owned();
                     let clean_song = remove_numbered_prefix(&song);
-                    let mut url = "http://lrclib.net/api/search".to_string();
-                    // url.push_str("?track_name=");
-                    // url.push_str(&urlencoding::encode(&song));
-                    // url.push_str("&artist_name=");
-                    // url.push_str(&urlencoding::encode(&artist));
-                    // url.push_str("&album_name=");
-                    // url.push_str(&urlencoding::encode(&album));
-                    url.push_str("?q=");
-                    let query = format!(
-                        "{}+{}+{}",
-                        encode(&album).replace("%20", "+"),
-                        encode(&artist).replace("%20", "+"),
-                        encode(&clean_song).replace("%20", "+")
-                    );
+
+                    let mut full_path = PathBuf::from("");
+                    full_path.push(music_dir);
+                    full_path.push(artist_dir);
+                    full_path.push(album_dir);
+                    full_path.push(file_path);
+
+                    let duration = get_audio_duration(&full_path);
+
+                    let mut url = "http://lrclib.net/api/get".to_string();
+                    url.push_str("?track_name=");
+                    url.push_str(&urlencoding::encode(&clean_song));
+                    url.push_str("&artist_name=");
+                    url.push_str(&urlencoding::encode(&artist));
+                    url.push_str("&album_name=");
+                    url.push_str(&urlencoding::encode(&album));
+                    url.push_str("&duration=");
+                    url.push_str(&duration.as_secs().to_string());
+                    // url.push_str("?q=");
+                    // let query = format!(
+                    //     "{}+{}+{}",
+                    //     encode(&album).replace("%20", "+"),
+                    //     encode(&artist).replace("%20", "+"),
+                    //     encode(&clean_song).replace("%20", "+")
+                    // );
                     // Fetch JSON data from the API
-                    url.push_str(&query);
+                    // url.push_str(&query);
+
+                    let url = url.replace("%20", "+");
                     println!("url: {}", url);
                     let response = reqwest::get(url).await;
                     match response {
@@ -141,62 +158,75 @@ async fn parse_song_path(
                                 Ok(json) => {
                                     // println!("json: {}", json);
                                     // Deserialize the JSON response
-                                    let tracks: Vec<Track> = serde_json::from_str(&json)
-                                        .expect(&format!("Failed to format json for {}", song));
+                                    let mut tracks: Vec<Track> = Vec::new();
 
-                                    // Find the first track with non-empty syncedLyrics
+                                    let track = serde_json::from_str(&json);
 
-                                    if let Some(track) =
-                                        tracks.iter().find(|&t| t.synced_lyrics.is_some())
-                                    {
-                                        match &track.synced_lyrics {
-                                            Some(lyrics) => {
-                                                // println!(
-                                                //     "First track with synced lyrics: {:?}",
-                                                //     lyrics
-                                                // );
-                                                let file_name = format!(
-                                                    "{}/{}/{}/{}.lrc",
-                                                    music_dir.display(),
-                                                    artist,
-                                                    album,
-                                                    song
-                                                );
+                                    match track {
+                                        Ok(track) => {
+                                            tracks.push(track);
 
-                                                // Create a new file or overwrite existing one
-                                                let mut file = File::create(&file_name)
-                                                    .await
-                                                    .expect(&format!(
-                                                        "Failed to create file {}",
-                                                        file_name
-                                                    ));
-
-                                                // Write syncedLyrics to the file
-                                                file.write_all(lyrics.as_bytes()).await.expect(
-                                                    &format!(
-                                                        "Failed to write to file {}",
-                                                        file_name
-                                                    ),
-                                                );
-
+                                            // Find the first track with non-empty syncedLyrics
+        
+                                            if let Some(track) =
+                                                tracks.iter().find(|&t| t.synced_lyrics.is_some())
+                                            {
+                                                match &track.synced_lyrics {
+                                                    Some(lyrics) => {
+                                                        // println!(
+                                                        //     "First track with synced lyrics: {:?}",
+                                                        //     lyrics
+                                                        // );
+                                                        let file_name = format!(
+                                                            "{}/{}/{}/{}.lrc",
+                                                            music_dir.display(),
+                                                            artist,
+                                                            album,
+                                                            song
+                                                        );
+        
+                                                        // Create a new file or overwrite existing one
+                                                        let mut file = File::create(&file_name)
+                                                            .await
+                                                            .expect(&format!(
+                                                                "Failed to create file {}",
+                                                                file_name
+                                                            ));
+        
+                                                        // Write syncedLyrics to the file
+                                                        file.write_all(lyrics.as_bytes()).await.expect(
+                                                            &format!(
+                                                                "Failed to write to file {}",
+                                                                file_name
+                                                            ),
+                                                        );
+        
+                                                        println!(
+                                                            "Saved lyrics for {} to {}",
+                                                            track.name, file_name
+                                                        );
+                                                        successful_count.fetch_add(1, Ordering::SeqCst);
+                                                    }
+                                                    None => {
+                                                        failed_count.fetch_add(1, Ordering::SeqCst);
+                                                    }
+                                                }
+                                            } else {
                                                 println!(
-                                                    "Saved lyrics for {} to {}",
-                                                    track.name, file_name
+                                                    "No track with synced lyrics found for {}, found at {}",
+                                                    song,
+                                                    file_path.display()
                                                 );
-                                                successful_count.fetch_add(1, Ordering::SeqCst);
-                                            }
-                                            None => {
                                                 failed_count.fetch_add(1, Ordering::SeqCst);
                                             }
-                                        }
-                                    } else {
-                                        println!(
-                                            "No track with synced lyrics found for {}, found at {}",
-                                            song,
-                                            file_path.display()
-                                        );
-                                        failed_count.fetch_add(1, Ordering::SeqCst);
+                                        },
+                                        Err(_) => {
+                                            println!("Failed to format data {} for song {}", json, song);
+                                            failed_count.fetch_add(1, Ordering::SeqCst);
+                                        } ,
                                     }
+
+                                  
                                 }
                                 Err(_) => {
                                     failed_count.fetch_add(1, Ordering::SeqCst);
@@ -227,4 +257,13 @@ fn remove_numbered_prefix(s: &str) -> String {
     }
     // If no valid prefix found, return the original string
     s.to_string()
+}
+
+fn get_audio_duration(file_path: &PathBuf) -> Duration {
+    let tagged_file = Probe::open(file_path)
+        .expect("ERROR: Bad path provided!")
+        .read()
+        .expect("ERROR: Failed to read file!");
+
+    tagged_file.properties().duration()
 }
