@@ -1,9 +1,14 @@
 use std::env;
+
+use lofty::file::AudioFile;
+use lofty::probe::Probe;
 use std::fmt;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::task;
@@ -55,8 +60,8 @@ async fn main() {
         ".mp3", ".flac", ".ogg", ".wav", ".aac", ".m4a", ".wma", ".opus", ".ape",
     ];
 
+    let mut total_count = 0;
     let successful_count = Arc::new(AtomicUsize::new(0));
-    let failed_count = Arc::new(AtomicUsize::new(0));
 
     let walker = WalkDir::new(&music_dir)
         .into_iter()
@@ -75,9 +80,9 @@ async fn main() {
             let music_dir = music_dir.to_owned();
             println!("{}", &entry.path().display());
             let successful_count = Arc::clone(&successful_count);
-            let failed_count = Arc::clone(&failed_count);
+            total_count += 1;
             task::spawn(async move {
-                parse_song_path(&entry.path(), &music_dir, successful_count, failed_count).await;
+                parse_song_path(&entry.path(), &music_dir, successful_count).await;
             })
         });
 
@@ -91,129 +96,33 @@ async fn main() {
         "Successful tasks: {}",
         successful_count.load(Ordering::SeqCst)
     );
-    println!("Failed tasks: {}", failed_count.load(Ordering::SeqCst));
     println!(
-        "Total tasks: {}",
-        successful_count.load(Ordering::SeqCst) + failed_count.load(Ordering::SeqCst)
+        "Failed tasks: {}",
+        total_count - successful_count.load(Ordering::SeqCst)
     );
+    println!("Total tasks: {}", total_count,);
     let end_time = Instant::now();
     let elapsed_time = end_time.duration_since(start_time);
     println!("Time taken: {:?}", elapsed_time);
 }
 
-async fn parse_song_path(
-    file_path: &Path,
-    music_dir: &Path,
-    successful_count: Arc<AtomicUsize>,
-    failed_count: Arc<AtomicUsize>,
-) -> Option<(String, String, String)> {
+async fn parse_song_path(file_path: &Path, music_dir: &Path, successful_count: Arc<AtomicUsize>) {
     if let Some(album_dir) = file_path.parent() {
         if let Some(artist_dir) = album_dir.parent() {
             if let Some(music_dirr) = artist_dir.parent() {
                 if music_dirr.starts_with(music_dir) {
-                    // Extract names from the directory structure
-                    let artist = artist_dir.file_name()?.to_string_lossy().into_owned();
-                    let album = album_dir.file_name()?.to_string_lossy().into_owned();
-                    let song = file_path.file_stem()?.to_string_lossy().into_owned();
-                    let clean_song = remove_numbered_prefix(&song);
-                    let mut url = "http://lrclib.net/api/search".to_string();
-                    // url.push_str("?track_name=");
-                    // url.push_str(&urlencoding::encode(&song));
-                    // url.push_str("&artist_name=");
-                    // url.push_str(&urlencoding::encode(&artist));
-                    // url.push_str("&album_name=");
-                    // url.push_str(&urlencoding::encode(&album));
-                    url.push_str("?q=");
-                    let query = format!(
-                        "{}+{}+{}",
-                        encode(&album).replace("%20", "+"),
-                        encode(&artist).replace("%20", "+"),
-                        encode(&clean_song).replace("%20", "+")
-                    );
-                    // Fetch JSON data from the API
-                    url.push_str(&query);
-                    println!("url: {}", url);
-                    let response = reqwest::get(url).await;
-                    match response {
-                        Ok(resp) => {
-                            let json_data = resp.text().await;
-                            match json_data {
-                                Ok(json) => {
-                                    // println!("json: {}", json);
-                                    // Deserialize the JSON response
-                                    let tracks: Vec<Track> = serde_json::from_str(&json)
-                                        .expect(&format!("Failed to format json for {}", song));
-
-                                    // Find the first track with non-empty syncedLyrics
-
-                                    if let Some(track) =
-                                        tracks.iter().find(|&t| t.synced_lyrics.is_some())
-                                    {
-                                        match &track.synced_lyrics {
-                                            Some(lyrics) => {
-                                                // println!(
-                                                //     "First track with synced lyrics: {:?}",
-                                                //     lyrics
-                                                // );
-                                                let file_name = format!(
-                                                    "{}/{}/{}/{}.lrc",
-                                                    music_dir.display(),
-                                                    artist,
-                                                    album,
-                                                    song
-                                                );
-
-                                                // Create a new file or overwrite existing one
-                                                let mut file = File::create(&file_name)
-                                                    .await
-                                                    .expect(&format!(
-                                                        "Failed to create file {}",
-                                                        file_name
-                                                    ));
-
-                                                // Write syncedLyrics to the file
-                                                file.write_all(lyrics.as_bytes()).await.expect(
-                                                    &format!(
-                                                        "Failed to write to file {}",
-                                                        file_name
-                                                    ),
-                                                );
-
-                                                println!(
-                                                    "Saved lyrics for {} to {}",
-                                                    track.name, file_name
-                                                );
-                                                successful_count.fetch_add(1, Ordering::SeqCst);
-                                            }
-                                            None => {
-                                                failed_count.fetch_add(1, Ordering::SeqCst);
-                                            }
-                                        }
-                                    } else {
-                                        println!(
-                                            "No track with synced lyrics found for {}, found at {}",
-                                            song,
-                                            file_path.display()
-                                        );
-                                        failed_count.fetch_add(1, Ordering::SeqCst);
-                                    }
-                                }
-                                Err(_) => {
-                                    failed_count.fetch_add(1, Ordering::SeqCst);
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            failed_count.fetch_add(1, Ordering::SeqCst);
-                        }
-                    }
-
-                    return Some((artist, album, song));
+                    exact_search(
+                        music_dir,
+                        artist_dir,
+                        album_dir,
+                        file_path,
+                        successful_count,
+                    )
+                    .await;
                 }
             }
         }
     }
-    None
 }
 
 fn remove_numbered_prefix(s: &str) -> String {
@@ -227,4 +136,238 @@ fn remove_numbered_prefix(s: &str) -> String {
     }
     // If no valid prefix found, return the original string
     s.to_string()
+}
+
+fn get_audio_duration(file_path: &PathBuf) -> Duration {
+    let tagged_file = Probe::open(file_path)
+        .expect("ERROR: Bad path provided!")
+        .read()
+        .expect("ERROR: Failed to read file!");
+
+    tagged_file.properties().duration()
+}
+
+async fn save_synced_lyrics(
+    music_dir: &Path,
+    artist_dir: &Path,
+    album_dir: &Path,
+    song_name: &String,
+    synced_lyrics: String,
+    successful_count: Arc<AtomicUsize>,
+) {
+    let mut parent_dir = PathBuf::new();
+    parent_dir.push(music_dir);
+    parent_dir.push(artist_dir);
+    parent_dir.push(album_dir);
+
+    let file_path = format!("{}/{}.lrc", parent_dir.to_string_lossy(), song_name);
+
+    // Create a new file or overwrite existing one
+    let mut file = File::create(&file_path)
+        .await
+        .expect(&format!("Failed to create file {}", file_path));
+
+    // Write syncedLyrics to the file
+    file.write_all(synced_lyrics.as_bytes())
+        .await
+        .expect(&format!("Failed to write to file {}", file_path));
+
+    println!("Saved lyrics for {} to {}", song_name, file_path);
+    successful_count.fetch_add(1, Ordering::SeqCst);
+}
+
+async fn exact_search(
+    music_dir: &Path,
+    artist_dir: &Path,
+    album_dir: &Path,
+    file_path: &Path,
+    successful_count: Arc<AtomicUsize>,
+) {
+    let artist_name = artist_dir
+        .file_name()
+        .expect("invalid artist_dir")
+        .to_string_lossy()
+        .into_owned();
+    let album_name = album_dir
+        .file_name()
+        .expect("invalid album_dir")
+        .to_string_lossy()
+        .into_owned();
+    // includes extenstion
+    // let song_full_name = file_path
+    //     .file_name()
+    //     .expect("invalid file_path")
+    //     .to_string_lossy()
+    //     .into_owned();
+    let song_name = file_path
+        .file_stem()
+        .expect("invalid file_path")
+        .to_string_lossy()
+        .into_owned();
+    let clean_song = remove_numbered_prefix(&song_name);
+
+    let mut full_path = PathBuf::from("");
+    full_path.push(music_dir);
+    full_path.push(artist_dir);
+    full_path.push(album_dir);
+    full_path.push(file_path);
+
+    let duration = get_audio_duration(&full_path);
+
+    let mut url = "http://lrclib.net/api/get".to_string();
+    url.push_str("?track_name=");
+    url.push_str(&urlencoding::encode(&clean_song));
+    url.push_str("&artist_name=");
+    url.push_str(&urlencoding::encode(&artist_name));
+    url.push_str("&album_name=");
+    url.push_str(&urlencoding::encode(&album_name));
+    url.push_str("&duration=");
+    url.push_str(&duration.as_secs().to_string());
+
+    let url = url.replace("%20", "+");
+    println!("[exact_search] requesting: {}", url);
+    let response = reqwest::get(url)
+        .await
+        .expect("[exact_search] request failed");
+    let json_data = response
+        .text()
+        .await
+        .expect("[exact_search] parsing body failed");
+
+    let track: Result<Track, serde_json::Error> = serde_json::from_str(&json_data);
+    match track {
+        Ok(track) => {
+            // Find the first track with non-empty syncedLyrics
+            match &track.synced_lyrics {
+                Some(lyrics) => {
+                    save_synced_lyrics(
+                        &music_dir,
+                        artist_dir,
+                        album_dir,
+                        &song_name,
+                        lyrics.clone(),
+                        successful_count,
+                    )
+                    .await;
+                }
+                None => {
+                    println!(
+                        "[exact_search] synced lyrics unavilable {} for song {} falling back to fuzzy_search",
+                        json_data, clean_song
+                    );
+                    fuzzy_search(
+                        music_dir,
+                        artist_dir,
+                        album_dir,
+                        file_path,
+                        successful_count,
+                    )
+                    .await;
+                }
+            }
+        }
+        Err(_) => {
+            println!(
+                "[exact_search] could not parse track response {} for song {} falling back to fuzzy_search",
+                json_data, clean_song
+            );
+            fuzzy_search(
+                music_dir,
+                artist_dir,
+                album_dir,
+                file_path,
+                successful_count,
+            )
+            .await;
+        }
+    }
+}
+
+async fn fuzzy_search(
+    music_dir: &Path,
+    artist_dir: &Path,
+    album_dir: &Path,
+    file_path: &Path,
+    successful_count: Arc<AtomicUsize>,
+) {
+    let artist_name = artist_dir
+        .file_name()
+        .expect("invalid artist_dir")
+        .to_string_lossy()
+        .into_owned();
+    let album_name = album_dir
+        .file_name()
+        .expect("invalid album_dir")
+        .to_string_lossy()
+        .into_owned();
+    // includes extenstion
+    // let song_full_name = file_path
+    //     .file_name()
+    //     .expect("invalid file_path")
+    //     .to_string_lossy()
+    //     .into_owned();
+    let song_name = file_path
+        .file_stem()
+        .expect("invalid file_path")
+        .to_string_lossy()
+        .into_owned();
+    let clean_song = remove_numbered_prefix(&song_name);
+    let mut url = "http://lrclib.net/api/search?q=".to_string();
+
+    // normal search and pick first one with synced lyrics
+    let query = format!(
+        "{}+{}+{}",
+        encode(&album_name),
+        encode(&artist_name),
+        encode(&clean_song)
+    );
+    url.push_str(&query);
+
+    let url = url.replace("%20", "+");
+    println!("[fuzzy_search] requesting: {}", url);
+    let response = reqwest::get(url)
+        .await
+        .expect("[fuzzy_search] request failed");
+    let json_data = response
+        .text()
+        .await
+        .expect("[fuzzy_search] parsing body failed");
+
+    let tracks: Result<Vec<Track>, serde_json::Error> = serde_json::from_str(&json_data);
+    match tracks {
+        Ok(tracks) => {
+            if let Some(track) = tracks.iter().find(|&t| t.synced_lyrics.is_some()) {
+                match &track.synced_lyrics {
+                    Some(lyrics) => {
+                        save_synced_lyrics(
+                            &music_dir,
+                            artist_dir,
+                            album_dir,
+                            &song_name,
+                            lyrics.clone(),
+                            successful_count,
+                        )
+                        .await;
+                    }
+                    None => {
+                        println!(
+                            "[fuzzy_search] could not parse synced lyrics for song {}",
+                            clean_song
+                        );
+                    }
+                }
+            } else {
+                println!(
+                    "[fuzzy_search] could not find synced lyrics for song {}",
+                    clean_song
+                );
+            }
+        }
+        Err(_) => {
+            println!(
+                "[fuzzy_search] failed to parse json {} for {}",
+                json_data, clean_song
+            );
+        }
+    }
 }
