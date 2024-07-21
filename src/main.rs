@@ -2,6 +2,7 @@ use std::env;
 
 use lofty::file::AudioFile;
 use lofty::probe::Probe;
+use regex::Regex;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
@@ -120,16 +121,17 @@ async fn parse_song_path(file_path: &Path, music_dir: &Path, successful_count: A
 }
 
 fn remove_numbered_prefix(s: &str) -> String {
-    // Find the index of the first dot
-    if let Some(index) = s.find('.') {
-        // Check if characters before the dot are digits
-        if s[..index].chars().all(|c| c.is_digit(10)) {
-            // Return substring after the dot
-            return s[index + 1..].trim().to_string();
-        }
-    }
-    // If no valid prefix found, return the original string
-    s.to_string()
+    let re = Regex::new(r"^(\d*\s?[\-\._\s]+)(.+)$").unwrap();
+    let matches = re.captures(s);
+    let name = match matches {
+        Some(v) => match v.get(2) {
+            Some(n) => n.as_str(),
+            None => s,
+        },
+        None => s,
+    };
+
+    return name.to_string();
 }
 
 fn get_audio_duration(file_path: &PathBuf) -> Duration {

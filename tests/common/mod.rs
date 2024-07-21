@@ -2,12 +2,18 @@ use std::path::PathBuf;
 
 use tokio::fs;
 
-pub const SONGS: [&str; 5] = [
+pub const SONGS: [&str; 11] = [
     "Taylor Swift/THE TORTURED POETS DEPARTMENT: THE ANTHOLOGY/1. Fortnight (Ft. Post Malone).flac",
     "Taylor Swift/THE TORTURED POETS DEPARTMENT: THE ANTHOLOGY/2. The Tortured Poets Department.mp3",
     "Taylor Swift/THE TORTURED POETS DEPARTMENT: THE ANTHOLOGY/3. My Boy Only Breaks His Favorite Toys.m4a",
     "Taylor Swift/reputation/2. End Game.flac",
     "Lou Reed/The Best of Lou Reed/8. Perfect Day.m4a",
+    "Heilung/Drif/01 Asja.flac",
+    "Heilung/Drif/02 - Anoana.flac",
+    "LINKIN PARK/Hybrid Theory/09-A Place for my Head.mp3",
+    "LINKIN PARK/LIVING THINGS/6.CASTLE OF GLASS.flac",
+    "Our Lady Peace/Clumsy/5_4AM.mp3",
+    "Our Lady Peace/Spiritual Machines/04 _ In Repair.mp3",
 ];
 
 pub const BASE_DIR: &str = "Music";
