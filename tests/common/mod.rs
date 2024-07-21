@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use temp_dir::TempDir;
 
 use tokio::fs;
 
@@ -15,8 +16,6 @@ pub const SONGS: [&str; 11] = [
     "Our Lady Peace/Clumsy/5_4AM.mp3",
     "Our Lady Peace/Spiritual Machines/04 _ In Repair.mp3",
 ];
-
-pub const BASE_DIR: &str = "Music";
 
 async fn create_files_with_names(output_file: &PathBuf) {
     let dirs = output_file.parent().expect("could not parse dirs");
@@ -41,12 +40,11 @@ async fn create_files_with_names(output_file: &PathBuf) {
     let _copy = fs::copy(PathBuf::from(source_file), output_file).await;
 }
 
-pub async fn setup() {
+pub async fn setup(basedir: &TempDir) {
     let mut tasks = vec![];
 
     for song_path in SONGS.iter() {
-        let mut path = PathBuf::from(BASE_DIR);
-        path.push(song_path);
+        let path = basedir.child(song_path);
 
         tasks.push(tokio::spawn(async move {
             create_files_with_names(&path).await;
@@ -57,14 +55,13 @@ pub async fn setup() {
     for task in tasks {
         task.await.expect("Failed to execute task");
     }
-    println!("Files created successfully in folder: {}", BASE_DIR);
+    println!(
+        "Files created successfully in folder: {}",
+        basedir.path().display()
+    );
 }
 
-pub async fn cleanup() {
-    let _remove = fs::remove_dir_all(BASE_DIR).await.expect("cleanup failed");
-}
-
-pub async fn check_lrcs() -> bool {
+pub async fn check_lrcs(basedir: &TempDir) -> bool {
     let mut song_names: Vec<String> = Vec::new();
 
     SONGS.iter().for_each(|song_path| {
@@ -78,9 +75,7 @@ pub async fn check_lrcs() -> bool {
     });
     let mut all_exist = true;
     for file in song_names.iter() {
-        let mut song_path = std::env::current_dir().expect("could not get curr dir");
-        song_path.push(BASE_DIR);
-        song_path.push(file);
+        let song_path = basedir.child(file);
         if let Err(_) = fs::metadata(song_path.clone()).await {
             println!("file {} does not exist", song_path.to_string_lossy());
             all_exist = false;

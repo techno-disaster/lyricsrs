@@ -1,5 +1,5 @@
-use std::env;
-
+use clap;
+use clap::Parser;
 use lofty::file::AudioFile;
 use lofty::probe::Probe;
 use regex::Regex;
@@ -17,6 +17,17 @@ use urlencoding::encode;
 use walkdir::WalkDir;
 
 use serde::Deserialize;
+
+#[derive(Parser)]
+struct CLI {
+    // Flags
+    #[arg(long = "allow-plain")]
+    allow_plain: bool,
+
+    // Positional args
+    #[arg(required = true)]
+    music_dir: String,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,15 +47,9 @@ struct Track {
 #[tokio::main]
 async fn main() {
     let start_time = Instant::now();
-    let args: Vec<String> = env::args().collect();
+    let args = CLI::parse();
 
-    let music_dir = match args.get(1) {
-        Some(dir) => Path::new(dir),
-        None => {
-            println!("Usage: {} <music_directory>", args[0]);
-            return;
-        }
-    };
+    let music_dir = Path::new(&args.music_dir);
 
     if !music_dir.is_dir() {
         eprintln!("Error: '{}' is not a valid directory.", music_dir.display());
@@ -77,7 +82,13 @@ async fn main() {
             let successful_count = Arc::clone(&successful_count);
             total_count += 1;
             task::spawn(async move {
-                parse_song_path(&entry.path(), &music_dir, successful_count).await;
+                parse_song_path(
+                    &entry.path(),
+                    &music_dir,
+                    successful_count,
+                    args.allow_plain,
+                )
+                .await;
             })
         });
 
@@ -101,7 +112,12 @@ async fn main() {
     println!("Time taken: {:?}", elapsed_time);
 }
 
-async fn parse_song_path(file_path: &Path, music_dir: &Path, successful_count: Arc<AtomicUsize>) {
+async fn parse_song_path(
+    file_path: &Path,
+    music_dir: &Path,
+    successful_count: Arc<AtomicUsize>,
+    allow_plain_lyrics: bool,
+) {
     if let Some(album_dir) = file_path.parent() {
         if let Some(artist_dir) = album_dir.parent() {
             if let Some(music_dirr) = artist_dir.parent() {
@@ -112,6 +128,7 @@ async fn parse_song_path(file_path: &Path, music_dir: &Path, successful_count: A
                         album_dir,
                         file_path,
                         successful_count,
+                        allow_plain_lyrics,
                     )
                     .await;
                 }
@@ -178,6 +195,7 @@ async fn exact_search(
     album_dir: &Path,
     file_path: &Path,
     successful_count: Arc<AtomicUsize>,
+    allow_plain_lyrics: bool,
 ) {
     let artist_name = artist_dir
         .file_name()
@@ -231,51 +249,74 @@ async fn exact_search(
         .expect("[exact_search] parsing body failed");
 
     let track: Result<Track, serde_json::Error> = serde_json::from_str(&json_data);
-    match track {
+    let track_lyrics = match track {
         Ok(track) => {
-            // Find the first track with non-empty syncedLyrics
             match &track.synced_lyrics {
-                Some(lyrics) => {
-                    save_synced_lyrics(
-                        &music_dir,
-                        artist_dir,
-                        album_dir,
-                        &song_name,
-                        lyrics.clone(),
-                        successful_count,
-                    )
-                    .await;
-                }
+                Some(lyrics) => lyrics.clone(),
                 None => {
-                    println!(
-                        "[exact_search] synced lyrics unavilable {} for song {} falling back to fuzzy_search",
-                        json_data, clean_song
-                    );
-                    fuzzy_search(
-                        music_dir,
-                        artist_dir,
-                        album_dir,
-                        file_path,
-                        successful_count,
-                    )
-                    .await;
+                    match &track.plain_lyrics {
+                        Some(lyrics) => {
+                            match allow_plain_lyrics {
+                                true => lyrics.clone(),
+                                false => {
+                                    println!(
+                                        "[exact_search] synced lyrics unavailable for song {}, plain lyrics available but not allowed",
+                                        clean_song
+                                    );
+                                    // Yes, in theory having no synced lyrics with plain lyrics
+                                    // available would mean there's no point in searching again.
+                                    // But, sometimes lrclib.net returns one song for the exact
+                                    // match that doesn't have synced lyrics when another will. So
+                                    // we fall through to the fuzzy search just in case that's what
+                                    // happened here.
+                                    String::new()
+                                }
+                            }
+                        }
+                        None => {
+                            println!(
+                                "[exact_search] no lyrics available {} for song {}",
+                                json_data, clean_song
+                            );
+                            return;
+                        }
+                    }
                 }
             }
         }
         Err(_) => {
             println!(
-                "[exact_search] could not parse track response {} for song {} falling back to fuzzy_search",
+                "[exact_search] could not parse track response {} for song {}",
                 json_data, clean_song
             );
-            fuzzy_search(
-                music_dir,
-                artist_dir,
-                album_dir,
-                file_path,
-                successful_count,
-            )
-            .await;
+            String::new()
         }
+    };
+
+    if track_lyrics.is_empty() {
+        println!(
+            "[exact_search] falling back to fuzzy search for song {}",
+            clean_song
+        );
+        fuzzy_search(
+            music_dir,
+            artist_dir,
+            album_dir,
+            file_path,
+            successful_count,
+            allow_plain_lyrics,
+        )
+        .await;
+    } else {
+        save_synced_lyrics(
+            &music_dir,
+            artist_dir,
+            album_dir,
+            &song_name,
+            track_lyrics,
+            successful_count,
+        )
+        .await;
     }
 }
 
@@ -285,6 +326,7 @@ async fn fuzzy_search(
     album_dir: &Path,
     file_path: &Path,
     successful_count: Arc<AtomicUsize>,
+    allow_plain_lyrics: bool,
 ) {
     let artist_name = artist_dir
         .file_name()
@@ -330,40 +372,51 @@ async fn fuzzy_search(
         .expect("[fuzzy_search] parsing body failed");
 
     let tracks: Result<Vec<Track>, serde_json::Error> = serde_json::from_str(&json_data);
-    match tracks {
+    let track_lyrics = match tracks {
         Ok(tracks) => {
-            if let Some(track) = tracks.iter().find(|&t| t.synced_lyrics.is_some()) {
-                match &track.synced_lyrics {
-                    Some(lyrics) => {
-                        save_synced_lyrics(
-                            &music_dir,
-                            artist_dir,
-                            album_dir,
-                            &song_name,
-                            lyrics.clone(),
-                            successful_count,
-                        )
-                        .await;
-                    }
-                    None => {
-                        println!(
-                            "[fuzzy_search] could not parse synced lyrics for song {}",
-                            clean_song
-                        );
+            let synced_track = tracks.iter().find(|&t| t.synced_lyrics.is_some());
+            match synced_track {
+                Some(track) => track.synced_lyrics.clone(),
+                None => {
+                    let plain_track = tracks.iter().find(|&t| t.plain_lyrics.is_some());
+                    match plain_track {
+                        Some(track) => match allow_plain_lyrics {
+                            true => track.plain_lyrics.clone(),
+                            false => {
+                                println!(
+                                        "[fuzzy search] synced lyrics unavailable {} for song {}, plain lyrics available but not allowed",
+                                        json_data, clean_song
+                                    );
+                                return;
+                            }
+                        },
+                        None => {
+                            println!(
+                                "[fuzzy_search] no lyrics available {} for song {}",
+                                json_data, clean_song
+                            );
+                            return;
+                        }
                     }
                 }
-            } else {
-                println!(
-                    "[fuzzy_search] could not find synced lyrics for song {}",
-                    clean_song
-                );
             }
         }
         Err(_) => {
             println!(
-                "[fuzzy_search] failed to parse json {} for {}",
+                "[fuzzy_search] could not parse track response {} for song {}",
                 json_data, clean_song
             );
+            return;
         }
-    }
+    };
+
+    save_synced_lyrics(
+        &music_dir,
+        artist_dir,
+        album_dir,
+        &song_name,
+        track_lyrics.expect("tried to save lyrics when none are available"),
+        successful_count,
+    )
+    .await;
 }
