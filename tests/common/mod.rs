@@ -13,11 +13,11 @@ pub const SONGS: [&str; 11] = [
     "Heilung/Drif/02 - Anoana.flac",
     "LINKIN PARK/Hybrid Theory/09-A Place for my Head.mp3",
     "LINKIN PARK/LIVING THINGS/6.CASTLE OF GLASS.flac",
-    "Our Lady Peace/Clumsy/5_4AM.mp3",
+    "Our Lady Peace/Clumsy/5_4am.mp3",
     "Our Lady Peace/Spiritual Machines/04 _ In Repair.mp3",
 ];
 
-async fn create_files_with_names(output_file: &PathBuf) {
+pub async fn create_files_with_names(output_file: &PathBuf) {
     let dirs = output_file.parent().expect("could not parse dirs");
     let file_name = output_file.file_name().expect("could not parse name");
 
@@ -34,6 +34,7 @@ async fn create_files_with_names(output_file: &PathBuf) {
         "flac" => "tests/data/template.flac",
         "mp3" => "tests/data/template.mp3",
         "m4a" => "tests/data/template.m4a",
+        "lrc" => "tests/data/template.lrc",
         _ => todo!(),
     };
 
