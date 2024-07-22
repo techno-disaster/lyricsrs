@@ -12,3 +12,4 @@ Will overwrite any .lrc files you already have with the existing name.
 
 Only does synced lyrics because they are cool.
 
+test ci
