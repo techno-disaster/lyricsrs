@@ -2,7 +2,6 @@ use std::env;
 
 use lofty::file::AudioFile;
 use lofty::probe::Probe;
-use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
@@ -20,6 +19,7 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct Track {
     id: f64,
     name: String,
@@ -30,12 +30,6 @@ struct Track {
     instrumental: bool,
     plain_lyrics: Option<String>,
     synced_lyrics: Option<String>,
-}
-
-impl fmt::Display for Track {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "id: {}, name: {}, track name: {}, artist name: {}, album name: {}, duration: {}, instrumental: {}, plain lyrics available: {}, synced lyrics available: {}" ,  self.id, self.name, self.track_name, self.artist_name, self.album_name, self.duration, self.instrumental, self.plain_lyrics.is_some(), self.synced_lyrics.is_some())
-    }
 }
 
 #[tokio::main]
