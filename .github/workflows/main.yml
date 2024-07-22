@@ -1,0 +1,25 @@
+name: Rust Check Format and Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check-format-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Test
+        run: cargo test -- --nocapture
