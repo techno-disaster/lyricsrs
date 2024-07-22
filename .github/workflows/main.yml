@@ -1,8 +1,8 @@
 name: Rust Check Format and Test
 
 on:
-  push
-  pull_request
+  push:
+  pull_request:
 
 jobs:
   check-format-and-test:
