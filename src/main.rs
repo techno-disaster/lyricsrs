@@ -278,7 +278,7 @@ async fn exact_search(
                                 "[exact_search] no lyrics available {} for song {}",
                                 json_data, clean_song
                             );
-                           String::new()
+                            String::new()
                         }
                     }
                 }
