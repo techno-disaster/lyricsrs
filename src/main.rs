@@ -21,10 +21,16 @@ use serde::Deserialize;
 #[derive(Parser)]
 struct CLI {
     // Flags
+    /// Allow plain lyrics if synced lyrics aren't available
     #[arg(long = "allow-plain")]
     allow_plain: bool,
 
+    /// Overwrite lyrics files
+    #[arg(long)]
+    overwrite: bool,
+
     // Positional args
+    /// Music directory to process
     #[arg(required = true)]
     music_dir: String,
 }
@@ -87,6 +93,7 @@ async fn main() {
                     &music_dir,
                     successful_count,
                     args.allow_plain,
+                    args.overwrite,
                 )
                 .await;
             })
@@ -117,6 +124,7 @@ async fn parse_song_path(
     music_dir: &Path,
     successful_count: Arc<AtomicUsize>,
     allow_plain_lyrics: bool,
+    overwrite_lyrics: bool,
 ) {
     if let Some(album_dir) = file_path.parent() {
         if let Some(artist_dir) = album_dir.parent() {
@@ -129,6 +137,7 @@ async fn parse_song_path(
                         file_path,
                         successful_count,
                         allow_plain_lyrics,
+                        overwrite_lyrics,
                     )
                     .await;
                 }
@@ -160,6 +169,22 @@ fn get_audio_duration(file_path: &PathBuf) -> Duration {
     tagged_file.properties().duration()
 }
 
+fn lyrics_file_name(
+    music_dir: &Path,
+    artist_dir: &Path,
+    album_dir: &Path,
+    song_name: &String,
+) -> String {
+    let mut parent_dir = PathBuf::new();
+    parent_dir.push(music_dir);
+    parent_dir.push(artist_dir);
+    parent_dir.push(album_dir);
+
+    let file_path = format!("{}/{}.lrc", parent_dir.to_string_lossy(), song_name);
+
+    return file_path;
+}
+
 async fn save_synced_lyrics(
     music_dir: &Path,
     artist_dir: &Path,
@@ -168,12 +193,7 @@ async fn save_synced_lyrics(
     synced_lyrics: String,
     successful_count: Arc<AtomicUsize>,
 ) {
-    let mut parent_dir = PathBuf::new();
-    parent_dir.push(music_dir);
-    parent_dir.push(artist_dir);
-    parent_dir.push(album_dir);
-
-    let file_path = format!("{}/{}.lrc", parent_dir.to_string_lossy(), song_name);
+    let file_path = lyrics_file_name(music_dir, artist_dir, album_dir, song_name);
 
     // Create a new file or overwrite existing one
     let mut file = File::create(&file_path)
@@ -196,6 +216,7 @@ async fn exact_search(
     file_path: &Path,
     successful_count: Arc<AtomicUsize>,
     allow_plain_lyrics: bool,
+    overwrite_lyrics: bool,
 ) {
     let artist_name = artist_dir
         .file_name()
@@ -218,6 +239,18 @@ async fn exact_search(
         .expect("invalid file_path")
         .to_string_lossy()
         .into_owned();
+
+    // Skip if the lyrics file already exists
+    let lyrics_path = lyrics_file_name(music_dir, artist_dir, album_dir, &song_name);
+    if !overwrite_lyrics && Path::new(&lyrics_path).exists() {
+        println!(
+            "Skipping {}, lyrics file exists: {}",
+            song_name, lyrics_path
+        );
+        successful_count.fetch_add(1, Ordering::SeqCst);
+        return;
+    }
+
     let clean_song = remove_numbered_prefix(&song_name);
 
     let mut full_path = PathBuf::from("");
@@ -305,6 +338,7 @@ async fn exact_search(
             file_path,
             successful_count,
             allow_plain_lyrics,
+            overwrite_lyrics,
         )
         .await;
     } else {
@@ -327,6 +361,7 @@ async fn fuzzy_search(
     file_path: &Path,
     successful_count: Arc<AtomicUsize>,
     allow_plain_lyrics: bool,
+    overwrite_lyrics: bool,
 ) {
     let artist_name = artist_dir
         .file_name()
@@ -349,6 +384,17 @@ async fn fuzzy_search(
         .expect("invalid file_path")
         .to_string_lossy()
         .into_owned();
+
+    // Skip if the lyrics file already exists
+    let lyrics_path = lyrics_file_name(music_dir, artist_dir, album_dir, &song_name);
+    if !overwrite_lyrics && Path::new(&lyrics_path).exists() {
+        println!(
+            "Skipping {}, lyrics file exists: {}",
+            song_name, lyrics_path
+        );
+        return;
+    }
+
     let clean_song = remove_numbered_prefix(&song_name);
     let mut url = "http://lrclib.net/api/search?q=".to_string();
 
